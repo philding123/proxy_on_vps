@@ -23,12 +23,35 @@ fi
 
 # 1. 修复语言包与基础环境
 fix_environment() {
-    info "正在安装基础依赖并配置 en_US.UTF-8 字符集..."
+    info "正在检查并配置系统源与基础依赖..."
     if command -v apt-get &>/dev/null; then
-        apt-get update -y
-        apt-get install -y locales curl wget openssl ca-certificates perl
-        locale-gen en_US.UTF-8
-        update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+        # 针对 Azure / 某些云厂商源 404 (如 trafficmanager.net) 的自动平滑修复
+        if grep -q "trafficmanager.net" /etc/apt/sources.list 2>/dev/null; then
+            warn "检测到 Azure trafficmanager 源（该源常出现 404 故障），正在切换为 Debian 官方稳定源..."
+            sed -i.bak 's|http://debian-archive.trafficmanager.net/debian-security|http://deb.debian.org/debian-security|g' /etc/apt/sources.list
+            sed -i 's|http://debian-archive.trafficmanager.net/debian|http://deb.debian.org/debian|g' /etc/apt/sources.list
+            rm -rf /var/lib/apt/lists/*
+            apt-get clean
+        fi
+
+        info "正在更新 apt 软件包列表..."
+        apt-get update -y || {
+            warn "apt-get update 遇到警告，正在清理旧缓存重试..."
+            rm -rf /var/lib/apt/lists/*
+            apt-get clean
+            apt-get update -y
+        }
+
+        info "正在安装基础依赖 (curl, wget, openssl, locales, ca-certificates)..."
+        apt-get install -y --fix-missing locales curl wget openssl ca-certificates perl || {
+            warn "部分可选包安装失败，尝试修复依赖并重试核心包..."
+            apt-get install -f -y
+            apt-get install -y locales curl wget openssl ca-certificates
+        }
+
+        # 配置字符集
+        locale-gen en_US.UTF-8 || true
+        update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 2>/dev/null || true
         export LANG=en_US.UTF-8
         export LC_ALL=en_US.UTF-8
     elif command -v yum &>/dev/null; then
