@@ -42,6 +42,30 @@ curl -fsSL https://raw.githubusercontent.com/philding123/proxy_on_vps/main/setup
 wget -N --no-check-certificate https://raw.githubusercontent.com/philding123/proxy_on_vps/main/setup.sh && chmod +x setup.sh && ./setup.sh
 ```
 
+### 单独一键安装 Hysteria 2 (hy2)
+
+仓库中提供了独立脚本 `install_hy2.sh`，可用于只安装 hy2 服务端：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/philding123/proxy_on_vps/main/install_hy2.sh -o install_hy2.sh && chmod +x install_hy2.sh && sudo ./install_hy2.sh
+```
+
+可选环境变量：
+
+- `PORT`（默认 `443`）
+- `DOMAIN`（设置后启用 ACME 证书）
+- `EMAIL`（可选；设置 `DOMAIN` 时建议填写可接收通知的邮箱）
+
+示例：
+
+```bash
+sudo DOMAIN=your.domain.com EMAIL=you@example.com PORT=443 ./install_hy2.sh
+```
+
+> ⚠️ 注意 1：当设置 `DOMAIN` 使用 ACME 时，需放行入站 **TCP 80**，且 80 端口不能被 Nginx 等服务占用，否则证书签发会失败。
+>
+> ⚠️ 注意 2：`install_hy2.sh` 与 `setup.sh` 的菜单选项 `4` 都会写入同一个 `/etc/hysteria/config.yaml`。如果交替运行，密码与证书路径可能被覆盖，客户端链接也会随之变化，请只保留一种安装流程作为主流程。
+
 ---
 
 ## 📋 菜单功能说明
