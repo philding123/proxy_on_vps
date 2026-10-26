@@ -101,6 +101,38 @@ get_valid_port() {
     done
 }
 
+# 密码输入与校验函数（仅允许 URL 安全字符，避免破坏 YAML 配置与分享链接）
+get_valid_password() {
+    local default_pwd="$1"
+    local target_pwd
+
+    while true; do
+        read -rp "请输入连接密码 [直接回车随机生成: ${default_pwd}]: " target_pwd
+        target_pwd=${target_pwd:-$default_pwd}
+
+        if [[ "$target_pwd" =~ ^[A-Za-z0-9._~-]+$ ]]; then
+            echo "$target_pwd"
+            return 0
+        else
+            error "密码只能包含字母、数字及 . _ ~ - 字符！"
+        fi
+    done
+}
+
+# 放行本机防火墙 (ufw / firewalld) 的 UDP 端口
+open_firewall_udp_port() {
+    local port="$1"
+
+    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow "${port}/udp" >/dev/null
+        info "已在 ufw 中放行 UDP ${port}"
+    elif command -v firewall-cmd &>/dev/null && firewall-cmd --state &>/dev/null; then
+        firewall-cmd --permanent --add-port="${port}/udp" >/dev/null
+        firewall-cmd --reload >/dev/null
+        info "已在 firewalld 中放行 UDP ${port}"
+    fi
+}
+
 # 4. 安装与配置 Hysteria 2
 install_hysteria2() {
     info "开始安装 Hysteria 2 官方服务..."
@@ -113,8 +145,7 @@ install_hysteria2() {
 
     # 配置密码
     default_pwd=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16)
-    read -rp "请输入连接密码 [直接回车随机生成: ${default_pwd}]: " hy2_pwd
-    hy2_pwd=${hy2_pwd:-$default_pwd}
+    hy2_pwd=$(get_valid_password "$default_pwd")
 
     # 伪装域名
     read -rp "请输入伪装 SNI 域名 [默认 cn.bing.com，直接回车确认]: " sni_domain
@@ -124,6 +155,7 @@ install_hysteria2() {
     mkdir -p /etc/hysteria
     openssl ecparam -genkey -name prime256v1 -out /etc/hysteria/server.key
     openssl req -new -x509 -days 3650 -key /etc/hysteria/server.key -out /etc/hysteria/server.crt -subj "/CN=${sni_domain}"
+    chmod 600 /etc/hysteria/server.key
 
     if id -u hysteria &>/dev/null; then
         chown -R hysteria:hysteria /etc/hysteria
@@ -139,7 +171,7 @@ tls:
 
 auth:
   type: password
-  password: ${hy2_pwd}
+  password: "${hy2_pwd}"
 
 resolver:
   type: udp
@@ -170,6 +202,7 @@ HY2_CONF
     systemctl daemon-reload
     systemctl enable hysteria-server.service
     systemctl restart hysteria-server.service
+    open_firewall_udp_port "${hy2_port}"
 
     # 获取本机外网 IPv4
     server_ip=$(curl -s4m8 https://api.ipify.org || curl -s4m8 https://ipv4.icanhazip.com || echo "YOUR_SERVER_IP")
@@ -204,9 +237,10 @@ change_hy2_port() {
     # 替换端口配置
     sed -i -E "s/^[[:space:]]*listen:[[:space:]]*:[0-9]+/listen: :${new_port}/g" "$conf_file"
     systemctl restart hysteria-server.service
+    open_firewall_udp_port "${new_port}"
 
     # 读取当前密码与伪装域名用于输出链接
-    hy2_pwd=$(grep -A 2 'auth:' "$conf_file" | grep 'password:' | awk '{print $2}' || echo "PASSWORD")
+    hy2_pwd=$(grep -A 2 'auth:' "$conf_file" | grep 'password:' | awk '{print $2}' | tr -d '"' || echo "PASSWORD")
     sni_domain=$(openssl x509 -in /etc/hysteria/server.crt -noout -subject 2>/dev/null | sed -n 's/.*CN[ ]*=[ ]*//p' || echo "cn.bing.com")
     server_ip=$(curl -s4m8 https://api.ipify.org || curl -s4m8 https://ipv4.icanhazip.com || echo "YOUR_SERVER_IP")
 
@@ -234,7 +268,7 @@ enable_nginx() {
 
 # 菜单入口
 menu() {
-    clear
+    clear || true
     echo -e "=================================================="
     echo -e "         VPS 综合优化与节点一键安装工具           "
     echo -e "=================================================="
@@ -246,7 +280,7 @@ menu() {
     echo -e " 6. 安装 WARP-GO"
     echo -e " 7. 设置 Nginx 开机自启"
     echo -e " ------------------------------------------------"
-    echo -e " 8. 【全套安装】按顺序执行全部步骤 (1 -> 2 -> 3 -> 4 -> 6)"
+    echo -e " 8. 【全套安装】按顺序执行全部步骤 (1 -> 2 -> 3 -> 4 -> 6 -> 7)"
     echo -e " 0. 退出"
     echo -e "=================================================="
     read -rp "请输入选项 [0-8]: " choice
@@ -256,7 +290,7 @@ menu() {
         2) enable_bbr_and_sysctl ;;
         3) install_vless_reality ;;
         4) install_hysteria2 ;;
-        5) change_hy2_port ;;
+        5) change_hy2_port || true ;;
         6) install_warp_go ;;
         7) enable_nginx ;;
         8)
@@ -272,4 +306,7 @@ menu() {
     esac
 }
 
-menu
+while true; do
+    menu
+    read -rp "按回车键返回主菜单..."
+done
