@@ -39,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/philding123/proxy_on_vps/main/setup
 或使用 `wget`：
 
 ```bash
-wget -N --no-check-certificate https://raw.githubusercontent.com/philding123/proxy_on_vps/main/setup.sh && chmod +x setup.sh && ./setup.sh
+wget -N https://raw.githubusercontent.com/philding123/proxy_on_vps/main/setup.sh && chmod +x setup.sh && ./setup.sh
 ```
 
 ---
@@ -60,7 +60,7 @@ wget -N --no-check-certificate https://raw.githubusercontent.com/philding123/pro
  6. 安装 WARP-GO
  7. 设置 Nginx 开机自启
  ------------------------------------------------
- 8. 【全套安装】按顺序执行全部步骤 (1 -> 2 -> 3 -> 4 -> 6)
+ 8. 【全套安装】按顺序执行全部步骤 (1 -> 2 -> 3 -> 4 -> 6 -> 7)
  0. 退出
 ==================================================
 ```
@@ -98,7 +98,7 @@ wget -N --no-check-certificate https://raw.githubusercontent.com/philding123/pro
 | **Windows** | [v2rayN](https://github.com/2dust/v2rayN) / [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev) / [Sing-box](https://github.com/SagerNet/sing-box) | v2rayN 需更新 core 至最新；勾选允许不安全证书 |
 | **Android** | [v2rayNG](https://github.com/2dust/v2rayNG) / [NekoBox](https://github.com/MatsuriDayo/NekoBoxForAndroid) / [Sing-box](https://github.com/SagerNet/sing-box) | 支持扫码或剪贴板导入节点 |
 | **macOS** | [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev) / [Surge](https://nssurge.com/) / [Sing-box](https://github.com/SagerNet/sing-box) | 支持系统代理或增强 TUN 模式 |
-| **iOS** | [Shadowrocket](https://apps.apple.com/app/shadowrocket/id932747118) / [Loon](https://apps.apple.com/app/loon/id1372230303) / [Stash](https://stash.ws/) | 扫描脚本生成的节点二维码或粘贴导入 |
+| **iOS** | [Shadowrocket](https://apps.apple.com/app/shadowrocket/id932747118) / [Loon](https://apps.apple.com/app/loon/id1372230303) / [Stash](https://stash.ws/) | 复制脚本输出的 `hysteria2://` 链接后从剪贴板导入 |
 
 ---
 
@@ -108,6 +108,13 @@ wget -N --no-check-certificate https://raw.githubusercontent.com/philding123/pro
 很多云服务商（如 Azure、Oracle Cloud 甲骨文、AWS、阿里云、腾讯云等）默认只放行了 TCP 22 端口。请务必前往**云控制台后台的安全组（Network Security Group / 防火墙）**添加入站规则：
 - **TCP 443**（用于 VLESS-Reality）
 - **UDP 443**（或你设置的 Hysteria 2 自定义端口，用于 QUIC）
+
+此外，若 VPS 系统内启用了 **ufw** 或 **firewalld**，脚本在安装 Hysteria 2 及修改端口时会自动放行对应的 UDP 端口；VLESS-Reality 使用的 TCP 端口若被本机防火墙拦截，请自行放行。部分镜像（如 Oracle Cloud 官方 Ubuntu）自带 iptables 拒绝规则，脚本不会修改，需手动放行，例如：
+
+```bash
+iptables -I INPUT -p udp --dport 443 -j ACCEPT
+netfilter-persistent save
+```
 
 ### 2. 为什么需要调大 `rmem_max` 和 `wmem_max`？
 Linux 默认的 UDP 缓冲区较小。当通过 Hysteria 2 进行高速下载或多连接并发时，操作系统的网络栈若来不及接收处理，就会直接丢弃 UDP 报文，导致断流或严重失速。脚本已将两个参数优化为 16MB 并持久化至 `/etc/sysctl.conf`。
