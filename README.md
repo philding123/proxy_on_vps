@@ -39,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/philding123/proxy_on_vps/main/setup
 或使用 `wget`：
 
 ```bash
-wget -N --no-check-certificate https://raw.githubusercontent.com/philding123/proxy_on_vps/main/setup.sh && chmod +x setup.sh && ./setup.sh
+wget -N https://raw.githubusercontent.com/philding123/proxy_on_vps/main/setup.sh && chmod +x setup.sh && ./setup.sh
 ```
 
 ---

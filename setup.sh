@@ -13,7 +13,7 @@ PLAIN="\033[0m"
 
 info() { echo -e "${GREEN}[INFO] $1${PLAIN}"; }
 warn() { echo -e "${YELLOW}[WARN] $1${PLAIN}"; }
-error() { echo -e "${RED}[ERROR] $1${PLAIN}"; }
+error() { echo -e "${RED}[ERROR] $1${PLAIN}" >&2; }
 
 # 检查是否以 root 运行
 if [[ $EUID -ne 0 ]]; then
@@ -59,21 +59,24 @@ net.core.rmem_max = 16777216
 net.core.wmem_max = 16777216
 SYSCTL_EOF
 
-    sysctl -p >/dev/null 2>&1
+    modprobe tcp_bbr 2>/dev/null || true
+    if ! sysctl -p >/dev/null; then
+        warn "部分 sysctl 参数未能生效（OpenVZ/LXC 容器或内核不支持 BBR 时常见），请检查上方报错。"
+    fi
 
-    info "BBR 与缓冲区配置已生效，当前拥塞控制算法："
-    sysctl net.ipv4.tcp_available_congestion_control
-    sysctl net.ipv4.tcp_congestion_control
+    info "当前拥塞控制算法："
+    sysctl net.ipv4.tcp_available_congestion_control || true
+    sysctl net.ipv4.tcp_congestion_control || true
 }
 
 # 3. 安装 VLESS Reality (调用 Mack-a 脚本)
 install_vless_reality() {
     info "准备运行 Mack-a v2ray-agent 脚本安装 VLESS Reality..."
     warn "该脚本带有交互式菜单，请在弹出菜单中选择【个性化安装 -> 7 或 8（包含 Reality）】"
-    read -rp "按回车键继续..." dummy
+    read -rp "按回车键继续..."
 
-    wget -P /root -N --no-check-certificate "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/install.sh" || \
-    wget -P /root -N --no-check-certificate "https://www.v2ray-agent.com/v2ray-agent/install.sh"
+    wget -P /root -N "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/install.sh" || \
+    wget -P /root -N "https://www.v2ray-agent.com/v2ray-agent/install.sh"
     chmod 700 /root/install.sh
     /root/install.sh
 }
