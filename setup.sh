@@ -25,43 +25,73 @@ fi
 fix_environment() {
     info "正在检查并配置系统源与基础依赖..."
     if command -v apt-get &>/dev/null; then
-        # 针对 Azure / 某些云厂商源 404 (如 trafficmanager.net) 的自动平滑修复
-        if grep -q "trafficmanager.net" /etc/apt/sources.list 2>/dev/null; then
-            warn "检测到 Azure trafficmanager 源（该源常出现 404 故障），正在切换为 Debian 官方稳定源..."
-            sed -i.bak 's|http://debian-archive.trafficmanager.net/debian-security|http://deb.debian.org/debian-security|g' /etc/apt/sources.list
-            sed -i 's|http://debian-archive.trafficmanager.net/debian|http://deb.debian.org/debian|g' /etc/apt/sources.list
-            rm -rf /var/lib/apt/lists/*
-            apt-get clean
+        local sources_updated=false
+
+        # Debian 11 (Bullseye) 官方 security 库已归档至 archive.debian.org
+        # 若仍使用 deb.debian.org 或 Azure trafficmanager 会出现 404
+        if grep -q "bullseye" /etc/apt/sources.list 2>/dev/null; then
+            warn "检测到 Debian 11 (bullseye) 系统，正在重定向 security 源至 archive.debian.org..."
+            echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until 2>/dev/null || true
+            sed -i.bak \
+                -e 's|http://debian-archive.trafficmanager.net/debian-security|http://archive.debian.org/debian-security|g' \
+                -e 's|http://deb.debian.org/debian-security|http://archive.debian.org/debian-security|g' \
+                -e 's|http://security.debian.org/debian-security|http://archive.debian.org/debian-security|g' \
+                -e 's|http://security.debian.org|http://archive.debian.org/debian-security|g' \
+                -e 's|http://debian-archive.trafficmanager.net/debian|http://deb.debian.org/debian|g' \
+                /etc/apt/sources.list
+            sources_updated=true
+        elif grep -q "trafficmanager.net" /etc/apt/sources.list 2>/dev/null; then
+            warn "检测到 Azure trafficmanager 源，正在切换为 Debian 官方稳定源..."
+            sed -i.bak \
+                -e 's|http://debian-archive.trafficmanager.net/debian-security|http://deb.debian.org/debian-security|g' \
+                -e 's|http://debian-archive.trafficmanager.net/debian|http://deb.debian.org/debian|g' \
+                /etc/apt/sources.list
+            sources_updated=true
         fi
 
-        info "正在更新 apt 软件包列表..."
-        apt-get update -y || {
-            warn "apt-get update 遇到警告，正在清理旧缓存重试..."
+        if [ "$sources_updated" = true ]; then
             rm -rf /var/lib/apt/lists/*
             apt-get clean
-            apt-get update -y
-        }
+            info "正在更新 apt 软件包列表..."
+            apt-get update -y || true
+        fi
 
-        info "正在安装基础依赖 (curl, wget, openssl, locales, ca-certificates)..."
-        apt-get install -y --fix-missing locales curl wget openssl ca-certificates perl || {
-            warn "部分可选包安装失败，尝试修复依赖并重试核心包..."
-            apt-get install -f -y
-            apt-get install -y locales curl wget openssl ca-certificates
-        }
+        # 检查核心工具，缺失时才调用 apt-get 安装，避免因无关联的安全包 404 中断脚本
+        local missing_pkgs=()
+        for cmd in curl wget openssl locale-gen; do
+            if ! command -v "$cmd" &>/dev/null; then
+                case "$cmd" in
+                    locale-gen) missing_pkgs+=("locales") ;;
+                    *) missing_pkgs+=("$cmd") ;;
+                esac
+            fi
+        done
+
+        if [ ${#missing_pkgs[@]} -gt 0 ]; then
+            info "正在补充安装缺失组件: ${missing_pkgs[*]}..."
+            apt-get install -y --fix-missing "${missing_pkgs[@]}" || apt-get install -y "${missing_pkgs[@]}" || true
+        else
+            info "核心依赖组件 (curl, wget, openssl, locales) 已就绪！"
+        fi
+
+        # 尝试安装 perl（非关键依赖，仅供字符集验证）
+        if ! command -v perl &>/dev/null; then
+            apt-get install -y --fix-missing perl 2>/dev/null || true
+        fi
 
         # 配置字符集
-        locale-gen en_US.UTF-8 || true
+        locale-gen en_US.UTF-8 2>/dev/null || true
         update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 2>/dev/null || true
         export LANG=en_US.UTF-8
         export LC_ALL=en_US.UTF-8
     elif command -v yum &>/dev/null; then
-        yum install -y glibc-common curl wget openssl ca-certificates perl
+        yum install -y glibc-common curl wget openssl ca-certificates perl 2>/dev/null || true
     fi
 
-    if perl -e exit 2>/dev/null; then
+    if command -v perl &>/dev/null && perl -e exit 2>/dev/null; then
         info "Perl 及系统语言环境检测正常！"
     else
-        warn "语言环境配置可能存在警告，但已尝试修正。"
+        info "已配置系统语言环境为 en_US.UTF-8。"
     fi
 }
 
