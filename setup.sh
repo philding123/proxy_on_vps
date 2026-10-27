@@ -21,62 +21,169 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# ===================== 系统识别与源修复 =====================
+
+# 读取 /etc/os-release 精确识别发行版类型与版本
+detect_os() {
+    OS_ID=""
+    OS_VERSION=""
+    OS_CODENAME=""
+
+    if [ -f /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        OS_ID="$ID"
+        OS_VERSION="$VERSION_ID"
+        OS_CODENAME="$VERSION_CODENAME"
+    fi
+
+    # 兜底：从 lsb_release 或 /etc/debian_version 推断
+    if [ -z "$OS_ID" ]; then
+        if [ -f /etc/debian_version ]; then
+            OS_ID="debian"
+        elif [ -f /etc/redhat-release ]; then
+            OS_ID="centos"
+        fi
+    fi
+
+    # Debian 没有 codename 时的回退映射
+    if [ "$OS_ID" = "debian" ] && [ -z "$OS_CODENAME" ]; then
+        case "$OS_VERSION" in
+            9*)  OS_CODENAME="stretch" ;;
+            10*) OS_CODENAME="buster" ;;
+            11*) OS_CODENAME="bullseye" ;;
+            12*) OS_CODENAME="bookworm" ;;
+            13*) OS_CODENAME="trixie" ;;
+        esac
+    fi
+
+    info "检测到系统: ${OS_ID} ${OS_VERSION} (${OS_CODENAME:-unknown})"
+}
+
+# 判断 Debian codename 是否已被官方归档（不再由 deb.debian.org 提供包）
+is_debian_archived() {
+    local codename="$1"
+    case "$codename" in
+        stretch|buster|bullseye) return 0 ;;  # Debian 9/10/11 均已归档
+        *) return 1 ;;
+    esac
+}
+
+# 判断 Ubuntu 版本是否已到 EOL（不再由 archive.ubuntu.com 提供包）
+is_ubuntu_eol() {
+    local codename="$1"
+    case "$codename" in
+        precise|trusty|xenial|bionic|cosmic|disco|eoan|groovy|hirsute|impish|kinetic|lunar|mantic)
+            return 0 ;;  # 这些版本均已 EOL
+        *) return 1 ;;
+    esac
+}
+
+# 针对不同发行版与版本状态，生成正确的 sources.list
+fix_apt_sources() {
+    local sources="/etc/apt/sources.list"
+    [ -f "$sources" ] || return 0
+
+    cp -f "$sources" "${sources}.bak.$(date +%s)" 2>/dev/null || true
+
+    if [ "$OS_ID" = "debian" ]; then
+        if is_debian_archived "$OS_CODENAME"; then
+            # ===== 已归档的 Debian (9/10/11) =====
+            warn "${OS_ID} ${OS_VERSION} (${OS_CODENAME}) 已被 Debian 官方归档，正在切换全部源至 archive.debian.org..."
+            echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
+            cat > "$sources" << DEBEOF
+deb http://archive.debian.org/debian ${OS_CODENAME} main contrib non-free
+deb http://archive.debian.org/debian ${OS_CODENAME}-updates main contrib non-free
+deb http://archive.debian.org/debian-security ${OS_CODENAME}-security main contrib non-free
+DEBEOF
+        else
+            # ===== 活跃版本的 Debian (12+) =====
+            if grep -q "trafficmanager.net" "$sources" 2>/dev/null; then
+                warn "检测到 Azure trafficmanager 源，正在切换为 Debian 官方源..."
+                cat > "$sources" << DEBEOF
+deb http://deb.debian.org/debian ${OS_CODENAME} main contrib non-free
+deb http://deb.debian.org/debian ${OS_CODENAME}-updates main contrib non-free
+deb http://deb.debian.org/debian-security ${OS_CODENAME}-security main contrib non-free
+DEBEOF
+            else
+                info "Debian ${OS_VERSION} (${OS_CODENAME}) 源配置正常，无需修改。"
+                return 0
+            fi
+        fi
+
+    elif [ "$OS_ID" = "ubuntu" ]; then
+        if is_ubuntu_eol "$OS_CODENAME"; then
+            # ===== 已 EOL 的 Ubuntu =====
+            warn "${OS_ID} ${OS_VERSION} (${OS_CODENAME}) 已到达 EOL，正在切换至 old-releases.ubuntu.com..."
+            echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
+            cat > "$sources" << UBEOF
+deb http://old-releases.ubuntu.com/ubuntu ${OS_CODENAME} main restricted universe multiverse
+deb http://old-releases.ubuntu.com/ubuntu ${OS_CODENAME}-updates main restricted universe multiverse
+deb http://old-releases.ubuntu.com/ubuntu ${OS_CODENAME}-security main restricted universe multiverse
+UBEOF
+        else
+            # ===== 活跃版本的 Ubuntu (20.04/22.04/24.04 LTS 等) =====
+            if grep -q "trafficmanager.net" "$sources" 2>/dev/null; then
+                warn "检测到 Azure trafficmanager 源，正在切换为 Ubuntu 官方源..."
+                cat > "$sources" << UBEOF
+deb http://archive.ubuntu.com/ubuntu ${OS_CODENAME} main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu ${OS_CODENAME}-updates main restricted universe multiverse
+deb http://security.ubuntu.com/ubuntu ${OS_CODENAME}-security main restricted universe multiverse
+UBEOF
+            else
+                info "Ubuntu ${OS_VERSION} (${OS_CODENAME}) 源配置正常，无需修改。"
+                return 0
+            fi
+        fi
+    else
+        info "非 Debian/Ubuntu 系统 (${OS_ID:-unknown})，跳过 apt 源修复。"
+        return 0
+    fi
+
+    # 清除旧缓存并刷新
+    rm -rf /var/lib/apt/lists/*
+    apt-get clean
+    info "正在更新 apt 软件包列表..."
+    apt-get update -y || {
+        warn "apt-get update 遇到警告（通常不影响核心包安装）。"
+    }
+}
+
 # 1. 修复语言包与基础环境
 fix_environment() {
     info "正在检查并配置系统源与基础依赖..."
+
+    # 先精确识别操作系统
+    detect_os
+
     if command -v apt-get &>/dev/null; then
-        local sources_updated=false
+        # 按发行版与版本自动修复 apt 源
+        fix_apt_sources
 
-        # Debian 11 (Bullseye) 官方 security 库已归档至 archive.debian.org
-        # 若仍使用 deb.debian.org 或 Azure trafficmanager 会出现 404
-        if grep -q "bullseye" /etc/apt/sources.list 2>/dev/null; then
-            warn "检测到 Debian 11 (bullseye) 系统，正在重定向 security 源至 archive.debian.org..."
-            echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until 2>/dev/null || true
-            sed -i.bak \
-                -e 's|http://debian-archive.trafficmanager.net/debian-security|http://archive.debian.org/debian-security|g' \
-                -e 's|http://deb.debian.org/debian-security|http://archive.debian.org/debian-security|g' \
-                -e 's|http://security.debian.org/debian-security|http://archive.debian.org/debian-security|g' \
-                -e 's|http://security.debian.org|http://archive.debian.org/debian-security|g' \
-                -e 's|http://debian-archive.trafficmanager.net/debian|http://deb.debian.org/debian|g' \
-                /etc/apt/sources.list
-            sources_updated=true
-        elif grep -q "trafficmanager.net" /etc/apt/sources.list 2>/dev/null; then
-            warn "检测到 Azure trafficmanager 源，正在切换为 Debian 官方稳定源..."
-            sed -i.bak \
-                -e 's|http://debian-archive.trafficmanager.net/debian-security|http://deb.debian.org/debian-security|g' \
-                -e 's|http://debian-archive.trafficmanager.net/debian|http://deb.debian.org/debian|g' \
-                /etc/apt/sources.list
-            sources_updated=true
-        fi
-
-        if [ "$sources_updated" = true ]; then
-            rm -rf /var/lib/apt/lists/*
-            apt-get clean
-            info "正在更新 apt 软件包列表..."
-            apt-get update -y || true
-        fi
-
-        # 检查核心工具，缺失时才调用 apt-get 安装，避免因无关联的安全包 404 中断脚本
+        # 检查核心工具，缺失时才安装，避免因无关联的安全包 404 中断脚本
         local missing_pkgs=()
-        for cmd in curl wget openssl locale-gen; do
+        for cmd in curl wget openssl; do
             if ! command -v "$cmd" &>/dev/null; then
-                case "$cmd" in
-                    locale-gen) missing_pkgs+=("locales") ;;
-                    *) missing_pkgs+=("$cmd") ;;
-                esac
+                missing_pkgs+=("$cmd")
             fi
         done
+        if ! command -v locale-gen &>/dev/null; then
+            missing_pkgs+=("locales")
+        fi
+        if ! command -v perl &>/dev/null; then
+            missing_pkgs+=("perl")
+        fi
 
         if [ ${#missing_pkgs[@]} -gt 0 ]; then
             info "正在补充安装缺失组件: ${missing_pkgs[*]}..."
-            apt-get install -y --fix-missing "${missing_pkgs[@]}" || apt-get install -y "${missing_pkgs[@]}" || true
+            apt-get install -y --fix-missing "${missing_pkgs[@]}" 2>/dev/null || {
+                warn "部分包安装失败，尝试逐个安装核心组件..."
+                for pkg in "${missing_pkgs[@]}"; do
+                    apt-get install -y "$pkg" 2>/dev/null || true
+                done
+            }
         else
-            info "核心依赖组件 (curl, wget, openssl, locales) 已就绪！"
-        fi
-
-        # 尝试安装 perl（非关键依赖，仅供字符集验证）
-        if ! command -v perl &>/dev/null; then
-            apt-get install -y --fix-missing perl 2>/dev/null || true
+            info "核心依赖组件 (curl, wget, openssl, locales, perl) 已就绪！"
         fi
 
         # 配置字符集
@@ -84,6 +191,7 @@ fix_environment() {
         update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 2>/dev/null || true
         export LANG=en_US.UTF-8
         export LC_ALL=en_US.UTF-8
+
     elif command -v yum &>/dev/null; then
         yum install -y glibc-common curl wget openssl ca-certificates perl 2>/dev/null || true
     fi
